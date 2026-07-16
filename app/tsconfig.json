@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@excalidraw/excalidraw": ["../external/excalidraw/packages/excalidraw/index.tsx"],
+      "@excalidraw/excalidraw/*": ["../external/excalidraw/packages/excalidraw/*"],
+      "@excalidraw/common": ["../external/excalidraw/packages/common/src/index.ts"],
+      "@excalidraw/common/*": ["../external/excalidraw/packages/common/src/*"],
+      "@excalidraw/element": ["../external/excalidraw/packages/element/src/index.ts"],
+      "@excalidraw/element/*": ["../external/excalidraw/packages/element/src/*"],
+      "@excalidraw/math": ["../external/excalidraw/packages/math/src/index.ts"],
+      "@excalidraw/math/*": ["../external/excalidraw/packages/math/src/*"],
+      "@excalidraw/utils": ["../external/excalidraw/packages/utils/src/index.ts"],
+      "@excalidraw/utils/*": ["../external/excalidraw/packages/utils/src/*"]
+    }
+  },
+  "include": ["src"]
+}

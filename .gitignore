@@ -1,0 +1,40 @@
+# --- dependências e builds do app Electron ---
+app/node_modules/
+app/dist/
+app/release/
+
+# --- base de código do Excalidraw (repositório próprio) ---
+# Tem .git próprio e não pode ser commitado como arquivos normais.
+# Recomendado: adicionar como git submodule
+#   git submodule add https://github.com/excalidraw/excalidraw external/excalidraw
+external/excalidraw/
+
+# --- dados do usuário (desenhos locais, não pertencem ao repositório) ---
+uploads/*
+!uploads/.gitkeep
+
+# --- variáveis de ambiente locais ---
+# app/.env fica no repositório (só contém URLs públicas necessárias ao build);
+# variações locais/secretas não:
+*.env.local
+.env*.local
+
+# --- configuração local do Claude Code ---
+.claude/settings.local.json
+
+# --- logs e temporários ---
+*.log
+npm-debug.log*
+*.tmp
+.*.tmp-*
+
+# --- arquivos de sistema operacional ---
+.DS_Store
+Thumbs.db
+
+# --- IDEs (descomente se não quiser versionar) ---
+# .vscode/
+.idea/
+
+requisitos.md
+requisitos-2.md
