@@ -10,6 +10,7 @@ import {
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
 import { MarkdownEditor } from "./components/MarkdownEditor";
+import { PdfEditor, type AnnotScene } from "./components/PdfEditor";
 import {
   fileKind,
   type FileKind,
@@ -20,6 +21,10 @@ import {
 } from "./types";
 
 const AUTOSAVE_DEBOUNCE_MS = 1000;
+// push pro Drive é mais caro que a escrita local: debounce próprio, mais folgado
+const DRIVE_SYNC_DEBOUNCE_MS = 3000;
+
+type DriveSyncState = "idle" | "syncing" | "error";
 
 const FONT_SIZES = [
   { value: 12, label: "Pequena" },
@@ -35,6 +40,20 @@ const systemTheme = (): Theme =>
   window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 
 type Scene = {
+  elements: readonly any[];
+  appState: any;
+  files: any;
+  savedJson: string;
+};
+
+/**
+ * PDF aberto: o conteúdo do PDF (base64) usado só para renderizar as páginas
+ * e o estado das anotações desenhadas por cima. Só as anotações são salvas
+ * (no sidecar) — o PDF em si nunca é modificado.
+ */
+type PdfDoc = {
+  base64: string;
+  initialAnnots: AnnotScene | null;
   elements: readonly any[];
   appState: any;
   files: any;
@@ -66,6 +85,11 @@ export default function App() {
   } | null>(null);
   const [googleAuth, setGoogleAuth] = useState<GoogleAuthStatus | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [driveSyncState, setDriveSyncState] = useState<DriveSyncState>("idle");
+  const [autoSync, setAutoSync] = useState<boolean>(
+    () => localStorage.getItem("drive-autosync") !== "false",
+  );
   const [fontSize, setFontSize] = useState<number>(() => {
     const saved = Number(localStorage.getItem("ui-font-size"));
     return FONT_SIZES.some((o) => o.value === saved) ? saved : DEFAULT_FONT_SIZE;
@@ -92,9 +116,26 @@ export default function App() {
   const scenes = useRef(new Map<string, Scene>());
   // documentos markdown abertos: texto atual e último texto salvo
   const mdDocs = useRef(new Map<string, { text: string; savedText: string }>());
+  // PDFs abertos: conteúdo + anotações desenhadas por cima
+  const pdfDocs = useRef(new Map<string, PdfDoc>());
   const saveTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const activePathRef = useRef(activePath);
   activePathRef.current = activePath;
+
+  // ---- sincronização com o Google Drive (push automático) -----------------
+  const drivePushTimers = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
+  const drivePushInFlight = useRef(new Set<string>()); // pushes em andamento
+  const drivePushPending = useRef(new Set<string>()); // mudou durante o push
+  const driveErrorNotified = useRef(false); // evita spam de toast de erro
+  // push só acontece quando logado e com auto-sync ligado
+  const driveAutoRef = useRef(false);
+  driveAutoRef.current = Boolean(autoSync && googleAuth?.loggedIn);
+
+  useEffect(() => {
+    localStorage.setItem("drive-autosync", String(autoSync));
+  }, [autoSync]);
 
   // biblioteca global de shapes, compartilhada entre todos os arquivos
   const excalidrawApi = useRef<any>(null);
@@ -231,6 +272,63 @@ export default function App() {
     [],
   );
 
+  /**
+   * Envia o documento ao Drive, coordenando concorrência: se já há um push do
+   * mesmo arquivo em andamento, marca como pendente e reenvia ao terminar
+   * (coalescendo múltiplas edições numa só subida a mais).
+   */
+  const runDrivePush = useCallback(
+    async (path: string, opts?: { notifySuccess?: boolean }) => {
+      if (drivePushInFlight.current.has(path)) {
+        drivePushPending.current.add(path);
+        return;
+      }
+      drivePushInFlight.current.add(path);
+      drivePushPending.current.delete(path);
+      setDriveSyncState("syncing");
+      try {
+        await window.api.drive.push(path);
+        driveErrorNotified.current = false;
+        if (opts?.notifySuccess) {
+          toast(`"${baseName(path)}" enviado ao Google Drive ✓`);
+        }
+      } catch (err: any) {
+        drivePushInFlight.current.delete(path);
+        setDriveSyncState("error");
+        if (!driveErrorNotified.current) {
+          driveErrorNotified.current = true;
+          toast(`Erro ao sincronizar com o Drive: ${err?.message ?? err}`);
+        }
+        return;
+      }
+      drivePushInFlight.current.delete(path);
+      if (drivePushPending.current.has(path)) {
+        runDrivePush(path); // reenvia a última versão
+        return;
+      }
+      if (drivePushInFlight.current.size === 0) setDriveSyncState("idle");
+    },
+    [toast],
+  );
+
+  /** Agenda (debounced) o push automático de um arquivo, se o auto-sync estiver ligado. */
+  const scheduleDrivePush = useCallback(
+    (path: string) => {
+      if (!driveAutoRef.current) return;
+      if (fileKind(path) === "pdf") return; // binário: sync de PDF ainda não suportado
+      const existing = drivePushTimers.current.get(path);
+      if (existing) clearTimeout(existing);
+      drivePushTimers.current.set(
+        path,
+        setTimeout(() => {
+          drivePushTimers.current.delete(path);
+          runDrivePush(path);
+        }, DRIVE_SYNC_DEBOUNCE_MS),
+      );
+    },
+    [runDrivePush],
+  );
+
   // ---- persistência -------------------------------------------------------
 
   const doSave = useCallback(
@@ -253,6 +351,35 @@ export default function App() {
         try {
           await window.api.writeFile(path, doc.text);
           doc.savedText = doc.text;
+          setTabStatus(path, "saved");
+          scheduleDrivePush(path);
+          return true;
+        } catch (err: any) {
+          const message = err?.message ?? String(err);
+          setTabStatus(path, "error", message);
+          toast(`Falha ao salvar "${baseName(path)}": ${message}`);
+          return false;
+        }
+      }
+
+      // PDF: só as anotações (desenho por cima) são persistidas, no sidecar
+      if (fileKind(path) === "pdf") {
+        const doc = pdfDocs.current.get(path);
+        if (!doc) return true;
+        const json = serializeAsJSON(
+          doc.elements as any,
+          doc.appState,
+          doc.files ?? {},
+          "local",
+        );
+        if (json === doc.savedJson) {
+          setTabStatus(path, "saved");
+          return true;
+        }
+        setTabStatus(path, "saving");
+        try {
+          await window.api.writePdfAnnots(path, json);
+          doc.savedJson = json;
           setTabStatus(path, "saved");
           return true;
         } catch (err: any) {
@@ -280,6 +407,7 @@ export default function App() {
         await window.api.writeFile(path, json);
         scene.savedJson = json;
         setTabStatus(path, "saved");
+        scheduleDrivePush(path);
         return true;
       } catch (err: any) {
         const message = err?.message ?? String(err);
@@ -288,7 +416,7 @@ export default function App() {
         return false;
       }
     },
-    [setTabStatus, toast],
+    [setTabStatus, toast, scheduleDrivePush],
   );
 
   const scheduleSave = useCallback(
@@ -339,6 +467,23 @@ export default function App() {
     [scheduleSave],
   );
 
+  const handlePdfChange = useCallback(
+    (path: string, scene: AnnotScene) => {
+      const doc = pdfDocs.current.get(path);
+      if (!doc) return;
+      doc.elements = scene.elements;
+      doc.appState = scene.appState;
+      doc.files = scene.files;
+      setTabs((tabs) =>
+        tabs.some((t) => t.path === path && t.status === "saved")
+          ? tabs.map((t) => (t.path === path ? { ...t, status: "dirty" } : t))
+          : tabs,
+      );
+      scheduleSave(path);
+    },
+    [scheduleSave],
+  );
+
   const handleExportPdf = useCallback(
     async (path: string, html: string) => {
       try {
@@ -351,12 +496,85 @@ export default function App() {
     [toast],
   );
 
+  // envia o documento ativo ao Google Drive (salva antes para garantir a
+  // versão mais recente no disco)
+  const handlePushActiveToDrive = useCallback(async () => {
+    const path = activePathRef.current;
+    if (!path) return;
+    if (fileKind(path) === "pdf") {
+      toast("Sincronização de PDF com o Drive ainda não é suportada");
+      return;
+    }
+    // cancela qualquer push agendado: vamos enviar agora
+    const timer = drivePushTimers.current.get(path);
+    if (timer) {
+      clearTimeout(timer);
+      drivePushTimers.current.delete(path);
+    }
+    setPushBusy(true);
+    try {
+      await doSave(path);
+      await runDrivePush(path, { notifySuccess: true });
+    } finally {
+      setPushBusy(false);
+    }
+  }, [doSave, runDrivePush, toast]);
+
   // ---- abas ---------------------------------------------------------------
 
   const openFile = useCallback(
     async (path: string) => {
-      if (scenes.current.has(path) || mdDocs.current.has(path)) {
+      if (
+        scenes.current.has(path) ||
+        mdDocs.current.has(path) ||
+        pdfDocs.current.has(path)
+      ) {
         setActivePath(path);
+        return;
+      }
+
+      // PDF: carrega o binário (para render) e as anotações salvas (sidecar)
+      if (fileKind(path) === "pdf") {
+        try {
+          const [base64, annotJson] = await Promise.all([
+            window.api.readBinary(path),
+            window.api.readPdfAnnots(path),
+          ]);
+          let initialAnnots: AnnotScene | null = null;
+          if (annotJson) {
+            const parsed = JSON.parse(annotJson);
+            const appState = parsed.appState ?? {};
+            delete appState.collaborators;
+            initialAnnots = {
+              elements: parsed.elements ?? [],
+              appState,
+              files: parsed.files ?? {},
+            };
+          }
+          const elements = initialAnnots?.elements ?? [];
+          const appState = initialAnnots?.appState ?? {};
+          const files = initialAnnots?.files ?? {};
+          pdfDocs.current.set(path, {
+            base64,
+            initialAnnots,
+            elements,
+            appState,
+            files,
+            savedJson: serializeAsJSON(
+              elements as any,
+              appState,
+              files,
+              "local",
+            ),
+          });
+          setTabs((tabs) => [
+            ...tabs,
+            { path, name: baseName(path), status: "saved" },
+          ]);
+          setActivePath(path);
+        } catch (err: any) {
+          toast(`Erro ao abrir "${baseName(path)}": ${err?.message ?? err}`);
+        }
         return;
       }
 
@@ -412,6 +630,7 @@ export default function App() {
       }
       scenes.current.delete(path);
       mdDocs.current.delete(path);
+      pdfDocs.current.delete(path);
       saveTimers.current.delete(path);
       setTabs((tabs) => {
         const idx = tabs.findIndex((t) => t.path === path);
@@ -459,6 +678,10 @@ export default function App() {
     for (const [p, doc] of mdDocs.current) newDocs.set(remap(p), doc);
     mdDocs.current = newDocs;
 
+    const newPdfs = new Map<string, PdfDoc>();
+    for (const [p, doc] of pdfDocs.current) newPdfs.set(remap(p), doc);
+    pdfDocs.current = newPdfs;
+
     for (const [p, timer] of [...saveTimers.current]) {
       const np = remap(p);
       if (np !== p) {
@@ -493,6 +716,20 @@ export default function App() {
     [refreshTree, openFile, toast],
   );
 
+  const handleImportPdf = useCallback(
+    async (dirRel: string = "") => {
+      try {
+        const path = await window.api.importPdf(dirRel);
+        if (!path) return; // cancelado
+        await refreshTree();
+        await openFile(path);
+      } catch (err: any) {
+        toast(`Erro ao importar PDF: ${err?.message ?? err}`);
+      }
+    },
+    [refreshTree, openFile, toast],
+  );
+
   const handleCreateFolder = useCallback(
     async (dirRel: string) => {
       try {
@@ -511,8 +748,8 @@ export default function App() {
   const handleRename = useCallback(
     async (path: string, newName: string) => {
       setRenamingPath(null);
-      // preserva a extensão do arquivo ao renomear (.excalidraw ou .md)
-      const extMatch = path.match(/\.(excalidraw|md)$/);
+      // preserva a extensão do arquivo ao renomear (.excalidraw/.md/.pdf)
+      const extMatch = path.match(/\.(excalidraw|md|pdf)$/);
       if (extMatch && !newName.endsWith(extMatch[0])) {
         newName += extMatch[0];
       }
@@ -557,6 +794,7 @@ export default function App() {
         for (const t of affected) {
           scenes.current.delete(t.path);
           mdDocs.current.delete(t.path);
+          pdfDocs.current.delete(t.path);
           const timer = saveTimers.current.get(t.path);
           if (timer) clearTimeout(timer);
           saveTimers.current.delete(t.path);
@@ -604,6 +842,7 @@ export default function App() {
       saveTimers.current.clear();
       scenes.current.clear();
       mdDocs.current.clear();
+      pdfDocs.current.clear();
       setTabs([]);
       setActivePath(null);
       setDirInfo(info);
@@ -639,10 +878,14 @@ export default function App() {
 
   // ---- render --------------------------------------------------------------
 
-  const activeIsMarkdown = activePath ? fileKind(activePath) === "markdown" : false;
+  const activeKind = activePath ? fileKind(activePath) : null;
   const activeScene = activePath ? scenes.current.get(activePath) : null;
   const activeMd =
-    activePath && activeIsMarkdown ? mdDocs.current.get(activePath) : null;
+    activePath && activeKind === "markdown"
+      ? mdDocs.current.get(activePath)
+      : null;
+  const activePdf =
+    activePath && activeKind === "pdf" ? pdfDocs.current.get(activePath) : null;
 
   // callbacks estáveis: o memo do <Excalidraw> compara props rasamente,
   // arrows inline aqui causariam re-render (e loop com onChange) a cada render
@@ -687,6 +930,26 @@ export default function App() {
             {googleAuth.loggedIn ? "🟢" : "👤"}
           </button>
         )}
+        {googleAuth?.loggedIn && (
+          <button
+            className="icon-btn"
+            title={
+              driveSyncState === "syncing"
+                ? "Sincronizando com o Google Drive…"
+                : driveSyncState === "error"
+                  ? "Falha na sincronização com o Drive — clique para tentar de novo"
+                  : "Enviar ao Google Drive"
+            }
+            disabled={pushBusy || !activePath}
+            onClick={handlePushActiveToDrive}
+          >
+            {pushBusy || driveSyncState === "syncing"
+              ? "⏳"
+              : driveSyncState === "error"
+                ? "⚠"
+                : "☁"}
+          </button>
+        )}
         <TabBar
           tabs={tabs}
           activePath={activePath}
@@ -729,6 +992,7 @@ export default function App() {
             onStartRename={setRenamingPath}
             onOpenFile={openFile}
             onCreateFile={handleCreateFile}
+            onImportPdf={handleImportPdf}
             onCreateFolder={handleCreateFolder}
             onRename={handleRename}
             onMove={handleMove}
@@ -744,6 +1008,15 @@ export default function App() {
               initialText={activeMd.text}
               onChange={(text) => handleMarkdownChange(activePath, text)}
               onExportPdf={(html) => handleExportPdf(activePath, html)}
+            />
+          ) : activePath && activePdf ? (
+            <PdfEditor
+              key={activePath}
+              path={activePath}
+              pdfBase64={activePdf.base64}
+              initialAnnots={activePdf.initialAnnots}
+              theme={theme}
+              onChange={(scene) => handlePdfChange(activePath, scene)}
             />
           ) : activePath && activeScene && libraryLoaded ? (
             <Excalidraw
@@ -775,6 +1048,9 @@ export default function App() {
                 >
                   + Novo markdown
                 </button>
+                <button className="secondary" onClick={() => handleImportPdf("")}>
+                  + Importar PDF
+                </button>
               </div>
             </div>
           )}
@@ -803,19 +1079,35 @@ export default function App() {
                   <code>app/.env.local</code>.
                 </p>
               ) : googleAuth.loggedIn ? (
-                <div className="google-account">
-                  <span className="google-status">
-                    <span className="google-dot" /> Conectado
-                    {googleAuth.email ? ` como ${googleAuth.email}` : ""}
-                  </span>
-                  <button
-                    className="secondary"
-                    disabled={authBusy}
-                    onClick={handleGoogleLogout}
-                  >
-                    Sair
-                  </button>
-                </div>
+                <>
+                  <div className="google-account">
+                    <span className="google-status">
+                      <span className="google-dot" /> Conectado
+                      {googleAuth.email ? ` como ${googleAuth.email}` : ""}
+                    </span>
+                    <button
+                      className="secondary"
+                      disabled={authBusy}
+                      onClick={handleGoogleLogout}
+                    >
+                      Sair
+                    </button>
+                  </div>
+                  <label className="google-autosync">
+                    <input
+                      type="checkbox"
+                      checked={autoSync}
+                      onChange={(e) => setAutoSync(e.target.checked)}
+                    />
+                    <span>
+                      Sincronizar automaticamente ao salvar
+                      <span className="google-autosync-hint">
+                        Envia desenhos e markdown para a pasta “Nanquim” no seu
+                        Drive (PDF ainda não).
+                      </span>
+                    </span>
+                  </label>
+                </>
               ) : (
                 <div className="google-account">
                   <span className="google-status muted">

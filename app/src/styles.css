@@ -255,6 +255,39 @@ body,
   background: var(--bg-chrome-hover);
 }
 
+/* ---- visualizador/editor de PDF ---- */
+
+.pdf-status {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-muted);
+  padding: 24px;
+  text-align: center;
+}
+
+.pdf-status-error h2 {
+  color: var(--text);
+}
+
+.pdf-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent, #6965db);
+  border-radius: 50%;
+  animation: pdf-spin 0.8s linear infinite;
+}
+
+@keyframes pdf-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* ---- sidebar ---- */
 
 .sidebar {
@@ -530,6 +563,27 @@ body,
   border-radius: 50%;
   background: #22c55e;
   flex: none;
+}
+
+.google-autosync {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  cursor: pointer;
+  font-size: calc(var(--ui-font) - 1px);
+}
+
+.google-autosync input {
+  margin-top: 3px;
+  flex: none;
+}
+
+.google-autosync-hint {
+  display: block;
+  color: var(--text-muted);
+  font-size: calc(var(--ui-font) - 2px);
+  margin-top: 2px;
 }
 
 .google-hint {

@@ -14,6 +14,7 @@ type SidebarProps = {
   onStartRename: (path: string | null) => void;
   onOpenFile: (path: string) => void;
   onCreateFile: (dirRel: string, kind: FileKind) => void;
+  onImportPdf: (dirRel: string) => void;
   onCreateFolder: (dirRel: string) => void;
   onRename: (path: string, newName: string) => void;
   onMove: (srcPath: string, destDir: string) => void;
@@ -126,7 +127,11 @@ export function Sidebar(props: SidebarProps) {
         onDragStart={(e) => e.dataTransfer.setData("text/plain", node.path)}
       >
         <span className="tree-icon">
-          {fileKind(node.path) === "markdown" ? "📝" : "📄"}
+          {fileKind(node.path) === "markdown"
+            ? "📝"
+            : fileKind(node.path) === "pdf"
+              ? "📕"
+              : "📄"}
         </span>
         {isRenaming ? (
           <RenameInput
@@ -173,6 +178,14 @@ export function Sidebar(props: SidebarProps) {
                 </button>
                 <button onClick={() => createInRoot("markdown")}>
                   <span className="tree-icon">📝</span> Markdown
+                </button>
+                <button
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    props.onImportPdf("");
+                  }}
+                >
+                  <span className="tree-icon">📕</span> Importar PDF
                 </button>
               </div>
             )}
@@ -225,6 +238,9 @@ export function Sidebar(props: SidebarProps) {
               <button onClick={() => props.onCreateFile(menuDir, "markdown")}>
                 Novo markdown
               </button>
+              <button onClick={() => props.onImportPdf(menuDir)}>
+                Importar PDF
+              </button>
               <button onClick={() => props.onCreateFolder(menuDir)}>
                 Nova subpasta
               </button>
@@ -246,6 +262,9 @@ export function Sidebar(props: SidebarProps) {
               </button>
               <button onClick={() => props.onCreateFile("", "markdown")}>
                 Novo markdown
+              </button>
+              <button onClick={() => props.onImportPdf("")}>
+                Importar PDF
               </button>
               <button onClick={() => props.onCreateFolder("")}>
                 Nova pasta

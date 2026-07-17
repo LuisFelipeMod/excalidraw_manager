@@ -6,15 +6,17 @@ export type TreeNode = {
 };
 
 /** Tipo de arquivo suportado no editor. */
-export type FileKind = "excalidraw" | "markdown";
+export type FileKind = "excalidraw" | "markdown" | "pdf";
 
 export function fileKind(path: string): FileKind {
-  return path.endsWith(".md") ? "markdown" : "excalidraw";
+  if (path.endsWith(".pdf")) return "pdf";
+  if (path.endsWith(".md")) return "markdown";
+  return "excalidraw";
 }
 
-/** Remove a extensão conhecida (.excalidraw/.md) para exibição/renomeio. */
+/** Remove a extensão conhecida (.excalidraw/.md/.pdf) para exibição/renomeio. */
 export function stripExt(name: string): string {
-  return name.replace(/\.(excalidraw|md)$/, "");
+  return name.replace(/\.(excalidraw|md|pdf)$/, "");
 }
 
 export type SaveStatus = "saved" | "dirty" | "saving" | "error";
@@ -45,8 +47,17 @@ export type ElectronAPI = {
   chooseDir: () => Promise<DirInfo | null>;
   resetDir: () => Promise<DirInfo>;
   readFile: (rel: string) => Promise<string>;
+  /** Lê um arquivo binário (ex.: PDF) e devolve o conteúdo em base64. */
+  readBinary: (rel: string) => Promise<string>;
   writeFile: (rel: string, content: string) => Promise<void>;
   createFile: (dirRel: string, kind: FileKind) => Promise<string>;
+  /** Abre o diálogo nativo para importar um PDF; copia para dirRel e
+   * resolve com o caminho relativo do PDF importado, ou null se cancelado. */
+  importPdf: (dirRel: string) => Promise<string | null>;
+  /** Lê as anotações (sidecar) de um PDF; null se ainda não houver. */
+  readPdfAnnots: (rel: string) => Promise<string | null>;
+  /** Grava as anotações (sidecar) de um PDF. */
+  writePdfAnnots: (rel: string, json: string) => Promise<void>;
   createFolder: (dirRel: string) => Promise<string>;
   renameEntry: (rel: string, newName: string) => Promise<string>;
   moveEntry: (srcRel: string, destDirRel: string) => Promise<string>;
@@ -67,6 +78,10 @@ export type ElectronAPI = {
     login: () => Promise<GoogleAuthStatus>;
     logout: () => Promise<GoogleAuthStatus>;
     status: () => Promise<GoogleAuthStatus>;
+  };
+  drive: {
+    /** Envia (cria ou atualiza) o documento local no Google Drive. */
+    push: (rel: string) => Promise<{ fileId: string }>;
   };
 };
 

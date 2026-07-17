@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const fsp = fs.promises;
 const googleAuth = require("./googleAuth");
+const driveSync = require("./driveSync");
 
 // Empacotado, o app roda de um bundle somente-leitura (squashfs do AppImage),
 // então os desenhos ficam no diretório de documentos do usuário.
@@ -91,6 +92,27 @@ function relPath(abs) {
   return path.relative(uploadsRoot, abs).split(path.sep).join("/");
 }
 
+/**
+ * Caminho do arquivo de anotações (sidecar) de um PDF. As anotações do
+ * Excalidraw desenhadas por cima do PDF ficam num arquivo oculto ao lado dele
+ * (o próprio PDF nunca é modificado). Ocultos (iniciados por ".") são
+ * ignorados por scanDir, então não aparecem na árvore.
+ */
+function sidecarPath(pdfAbs) {
+  return path.join(
+    path.dirname(pdfAbs),
+    `.${path.basename(pdfAbs)}.annots`,
+  );
+}
+
+/** Move o sidecar de anotações junto com o PDF, se existir. */
+async function moveSidecar(srcPdfAbs, destPdfAbs) {
+  const src = sidecarPath(srcPdfAbs);
+  if (await exists(src)) {
+    await fsp.rename(src, sidecarPath(destPdfAbs)).catch(() => {});
+  }
+}
+
 async function scanDir(dir) {
   const entries = await fsp.readdir(dir, { withFileTypes: true });
   const nodes = [];
@@ -106,7 +128,9 @@ async function scanDir(dir) {
       });
     } else if (
       entry.isFile() &&
-      (entry.name.endsWith(".excalidraw") || entry.name.endsWith(".md"))
+      (entry.name.endsWith(".excalidraw") ||
+        entry.name.endsWith(".md") ||
+        entry.name.endsWith(".pdf"))
     ) {
       nodes.push({ type: "file", name: entry.name, path: relPath(abs) });
     }
@@ -259,6 +283,40 @@ function registerIpc() {
 
   ipcMain.handle("fs:read", (_e, rel) => fsp.readFile(safePath(rel), "utf8"));
 
+  // conteúdo binário (PDF) em base64 — usado pelo visualizador de PDF
+  ipcMain.handle("fs:read-binary", async (_e, rel) => {
+    const buf = await fsp.readFile(safePath(rel));
+    return buf.toString("base64");
+  });
+
+  // importa um PDF externo copiando-o para dentro da pasta de trabalho
+  ipcMain.handle("pdf:import", async (_e, dirRel) => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Importar PDF",
+      properties: ["openFile"],
+      filters: [{ name: "PDF", extensions: ["pdf"] }],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const source = result.filePaths[0];
+    const base = path.basename(source, ".pdf");
+    const abs = await uniquePath(safePath(dirRel), base, ".pdf");
+    await fsp.copyFile(source, abs);
+    return relPath(abs);
+  });
+
+  // anotações (sidecar) de um PDF: lê / grava o JSON do Excalidraw
+  ipcMain.handle("pdf:read-annots", async (_e, rel) => {
+    try {
+      return await fsp.readFile(sidecarPath(safePath(rel)), "utf8");
+    } catch {
+      return null;
+    }
+  });
+
+  ipcMain.handle("pdf:write-annots", (_e, rel, json) =>
+    atomicWrite(sidecarPath(safePath(rel)), json),
+  );
+
   ipcMain.handle("fs:write", (_e, rel, content) =>
     atomicWrite(safePath(rel), content),
   );
@@ -285,6 +343,7 @@ function registerIpc() {
     const dest = path.join(path.dirname(src), newName);
     if (await exists(dest)) throw new Error(`Já existe: ${newName}`);
     await fsp.rename(src, dest);
+    if (src.endsWith(".pdf")) await moveSidecar(src, dest);
     return relPath(dest);
   });
 
@@ -300,12 +359,17 @@ function registerIpc() {
       throw new Error(`Já existe "${path.basename(src)}" no destino`);
     }
     await fsp.rename(src, dest);
+    if (src.endsWith(".pdf")) await moveSidecar(src, dest);
     return relPath(dest);
   });
 
-  ipcMain.handle("fs:delete", (_e, rel) =>
-    fsp.rm(safePath(rel), { recursive: true }),
-  );
+  ipcMain.handle("fs:delete", async (_e, rel) => {
+    const abs = safePath(rel);
+    await fsp.rm(abs, { recursive: true });
+    if (abs.endsWith(".pdf")) {
+      await fsp.rm(sidecarPath(abs), { force: true }).catch(() => {});
+    }
+  });
 
   ipcMain.handle("fs:duplicate", async (_e, rel) => {
     const src = safePath(rel);
@@ -313,6 +377,13 @@ function registerIpc() {
     const base = path.basename(src, ext);
     const abs = await uniquePath(path.dirname(src), `${base} (cópia)`, ext);
     await fsp.copyFile(src, abs);
+    // duplica também as anotações do PDF, se houver
+    if (ext === ".pdf") {
+      const srcSide = sidecarPath(src);
+      if (await exists(srcSide)) {
+        await fsp.copyFile(srcSide, sidecarPath(abs)).catch(() => {});
+      }
+    }
     return relPath(abs);
   });
 
@@ -322,6 +393,12 @@ function registerIpc() {
   ipcMain.handle("auth:login", () => googleAuth.login());
   ipcMain.handle("auth:logout", () => googleAuth.logout());
   ipcMain.handle("auth:status", () => googleAuth.getStatus());
+
+  // envia (push) o documento local para o Google Drive
+  ipcMain.handle("drive:push", async (_e, rel) => {
+    const content = await fsp.readFile(safePath(rel), "utf8");
+    return driveSync.pushFile(rel, content);
+  });
 }
 
 /**

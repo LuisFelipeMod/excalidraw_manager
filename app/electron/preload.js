@@ -6,9 +6,14 @@ contextBridge.exposeInMainWorld("api", {
   chooseDir: () => ipcRenderer.invoke("dir:choose"),
   resetDir: () => ipcRenderer.invoke("dir:reset"),
   readFile: (rel) => ipcRenderer.invoke("fs:read", rel),
+  readBinary: (rel) => ipcRenderer.invoke("fs:read-binary", rel),
   writeFile: (rel, content) => ipcRenderer.invoke("fs:write", rel, content),
   createFile: (dirRel, kind) =>
     ipcRenderer.invoke("fs:create-file", dirRel, kind),
+  importPdf: (dirRel) => ipcRenderer.invoke("pdf:import", dirRel),
+  readPdfAnnots: (rel) => ipcRenderer.invoke("pdf:read-annots", rel),
+  writePdfAnnots: (rel, json) =>
+    ipcRenderer.invoke("pdf:write-annots", rel, json),
   createFolder: (dirRel) => ipcRenderer.invoke("fs:create-folder", dirRel),
   renameEntry: (rel, newName) => ipcRenderer.invoke("fs:rename", rel, newName),
   moveEntry: (srcRel, destDirRel) =>
@@ -41,5 +46,8 @@ contextBridge.exposeInMainWorld("api", {
     login: () => ipcRenderer.invoke("auth:login"),
     logout: () => ipcRenderer.invoke("auth:logout"),
     status: () => ipcRenderer.invoke("auth:status"),
+  },
+  drive: {
+    push: (rel) => ipcRenderer.invoke("drive:push", rel),
   },
 });
