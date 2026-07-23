@@ -43,10 +43,11 @@ jobs:
 
       - name: Build e empacota (electron-builder)
         working-directory: app
-        run: npm run dist
+        # --publish never: o electron-builder apenas empacota; a publicação na
+        # Release é feita no passo seguinte (softprops). Sem isso, a presença de
+        # um token faria o electron-builder tentar resolver o publish/repo.
+        run: npm run dist -- --publish never
         env:
-          # Token usado pelo electron-builder para publicação, quando aplicável.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Evita que o build no macOS tente assinar/notarizar (sem certificado).
           CSC_IDENTITY_AUTO_DISCOVERY: false
 

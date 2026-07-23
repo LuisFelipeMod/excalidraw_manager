@@ -4,7 +4,11 @@
   "private": true,
   "description": "Nanquim — gerenciador e editor de desenhos Excalidraw e notas Markdown",
   "author": "Luis Modesto <luisgmodesto12@gmail.com>",
-  "homepage": "https://github.com/LuisFelipeMod/excalidraw_manager",
+  "homepage": "https://github.com/LuisFelipeMod/nanquim_app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LuisFelipeMod/nanquim_app.git"
+  },
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently -k -s first \"vite\" \"wait-on tcp:127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
